@@ -8,6 +8,7 @@ type Termination struct {
 	args      []Value
 	pushIndex int
 	etc       *[]Value
+	inline    [2]Value // backs args for up to two values: one allocation instead of two
 }
 
 var _ Cont = (*Termination)(nil)
@@ -22,13 +23,18 @@ func NewTermination(parent Cont, args []Value, etc *[]Value) *Termination {
 // NewTerminationWith creates a new Termination expecting nArgs args and
 // possibly gathering extra args into an etc if hasEtc is true.
 func NewTerminationWith(parent Cont, nArgs int, hasEtc bool) *Termination {
-	var args []Value
 	var etc *[]Value
-	if nArgs > 0 {
-		args = make([]Value, nArgs)
-	}
 	if hasEtc {
 		etc = new([]Value)
+	}
+	if nArgs > 0 && nArgs <= 2 {
+		c := &Termination{parent: parent, etc: etc}
+		c.args = c.inline[:nArgs]
+		return c
+	}
+	var args []Value
+	if nArgs > 0 {
+		args = make([]Value, nArgs)
 	}
 	return NewTermination(parent, args, etc)
 }
