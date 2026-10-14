@@ -20,6 +20,32 @@ const (
 // order to avoid irrecoverable Go stack overflows.
 const maxGoFunctionCallDepth = 1000
 
+// pooledTermination returns a termination for a call that reads at most two results (nArgs, 0 to 2) and drops the rest, in place of
+// NewTerminationWith(t.CurrentCont(), nArgs, false) and its allocation on every metamethod call.
+//
+// A termination lives only while the call it ends runs, and the call runs its callee in a RunContinuation loop of its own, one deeper. So
+// the terminations alive at one time are at strictly increasing depths and the depth (kept right through panics, it is decremented in a defer)
+// identifies a free one: sequential calls at the same depth reuse it, nested calls use the next.  Nothing keeps a termination after the call:
+// the callee's continuations, which point to it, are dead, and an Error copies what it needs of the chain when it is made (AddContext).
+// The slot is reset when it is taken, not when the call ends, so a call that panics or fails leaves nothing to clean up.
+func (t *Thread) pooledTermination(nArgs int) *Termination {
+	d := t.runContinuationDepth
+	if d >= len(t.terms) {
+		t.terms = append(t.terms, make([]*Termination, d+1-len(t.terms))...)
+	}
+	c := t.terms[d]
+	if c == nil {
+		c = new(Termination)
+		t.terms[d] = c
+	}
+	c.parent = t.CurrentCont()
+	c.pushIndex = 0
+	c.etc = nil
+	c.inline = [2]Value{}
+	c.args = c.inline[:nArgs]
+	return c
+}
+
 // The number of nested continuation loops (RunContinuation) active in one
 // thread is limited by this number, for the same reason. A Lua function that
 // the VM calls directly as a metamethod (__index, __newindex, __eq, __lt,
@@ -64,6 +90,10 @@ type Thread struct {
 	// Depth of nested RunContinuation loops in the thread.  This should not
 	// exceed maxRunContinuationDepth.
 	runContinuationDepth int
+
+	// terms are the terminations of the calls the runtime itself makes (metamethods, Call1, ...), one per depth of nested RunContinuation loops:
+	// see pooledTermination.  The pointers are stable, so a slice that grows is fine.
+	terms []*Termination
 
 	// Depth of __call metamethod chain (Lua 5.5).  This should not exceed
 	// maxCallChainLength to prevent infinite loops through chained __call metamethods.

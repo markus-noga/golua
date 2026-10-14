@@ -49,7 +49,7 @@ func Index(t *Thread, coll Value, k Value) (Value, error) {
 		if _, ok := metaIdx.TryTable(); ok {
 			coll = metaIdx
 		} else {
-			res := NewTerminationWith(t.CurrentCont(), 1, false)
+			res := t.pooledTermination(1)
 			if err := Call(t, metaIdx, []Value{coll, k}, res); err != nil {
 				return NilValue, err
 			}
@@ -92,7 +92,7 @@ func SetIndex(t *Thread, coll Value, idx Value, val Value) error {
 		if _, ok := metaNewIndex.TryTable(); ok {
 			coll = metaNewIndex
 		} else {
-			return Call(t, metaNewIndex, []Value{coll, idx, val}, NewTermination(t.CurrentCont(), nil, nil))
+			return Call(t, metaNewIndex, []Value{coll, idx, val}, t.pooledTermination(0))
 		}
 	}
 	return fmt.Errorf("'__newindex' chain too long; possible loop")
@@ -172,7 +172,7 @@ func Call(t *Thread, f Value, args []Value, next Cont) error {
 // Call1 is a convenience method that calls f with arguments args and returns
 // exactly one value.
 func Call1(t *Thread, f Value, args ...Value) (Value, error) {
-	term := NewTerminationWith(t.CurrentCont(), 1, false)
+	term := t.pooledTermination(1)
 	if err := Call(t, f, args, term); err != nil {
 		return NilValue, err
 	}
@@ -215,7 +215,7 @@ func IntLen(t *Thread, v Value) (int64, error) {
 	if s, ok := v.TryString(); ok {
 		return int64(len(s)), nil
 	}
-	res := NewTerminationWith(t.CurrentCont(), 1, false)
+	res := t.pooledTermination(1)
 	err, ok := Metacall(t, v, "__len", []Value{v}, res)
 	if ok {
 		if err != nil {
@@ -238,7 +238,7 @@ func Len(t *Thread, v Value) (Value, error) {
 	if s, ok := v.TryString(); ok {
 		return IntValue(int64(len(s))), nil
 	}
-	res := NewTerminationWith(t.CurrentCont(), 1, false)
+	res := t.pooledTermination(1)
 	err, ok := Metacall(t, v, "__len", []Value{v}, res)
 	if ok {
 		if err != nil {
@@ -511,7 +511,7 @@ func metacont(t *Thread, obj Value, method string, next Cont) (Cont, error, bool
 
 func metabin(t *Thread, f string, x Value, y Value) (Value, error, bool) {
 	xy := []Value{x, y}
-	res := NewTerminationWith(t.CurrentCont(), 1, false)
+	res := t.pooledTermination(1)
 	err, ok := Metacall(t, x, f, xy, res)
 	if !ok {
 		err, ok = Metacall(t, y, f, xy, res)
@@ -523,7 +523,7 @@ func metabin(t *Thread, f string, x Value, y Value) (Value, error, bool) {
 }
 
 func metaun(t *Thread, f string, x Value) (Value, error, bool) {
-	res := NewTerminationWith(t.CurrentCont(), 1, false)
+	res := t.pooledTermination(1)
 	err, ok := Metacall(t, x, f, []Value{x}, res)
 	if ok {
 		return res.Get(0), err, true
