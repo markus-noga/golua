@@ -3,6 +3,7 @@ package runtime
 import (
 	"math"
 	"math/bits"
+	"sync/atomic"
 	"unsafe"
 )
 
@@ -369,6 +370,26 @@ func (t *hashTable) reset(k, v Value) bool {
 		t.mc.valid = 0
 	}
 	return resetKeyValue(t.slots, (1<<t.base)-1, k, v)
+}
+
+// findHint is find with a hint: the index of the slot where the same lookup found its key last time, which the caller keeps for the place in
+// its code that looks up this key (the same field of tables of the same shape sits in the same slot).  The hint is verified before it is used, so
+// a wrong one only costs the lookup it was meant to save.  Only for keys that are not integers (these may live in the array part).
+func (t *hashTable) findHint(k Value, hint *atomic.Uint32) Value {
+	if t == nil {
+		return NilValue
+	}
+	if i := int(hint.Load()); i < len(t.slots) {
+		if it := &t.slots[i]; it.key.Equals(k) {
+			return it.value
+		}
+	}
+	it, i := findSlot(t.slots, (1<<t.base)-1, k)
+	if it == nil {
+		return NilValue
+	}
+	hint.Store(uint32(i))
+	return it.value
 }
 
 func (t *hashTable) find(k Value) Value {
