@@ -35,6 +35,7 @@ type runtimeContextManager struct {
 	messageHandler Callable
 
 	trackCpu         bool
+	fuel, granted    int64 // CPU ticks left of those granted by the last grantFuel, and the number granted: see RequireCPU
 	trackMem         bool
 	trackTime        bool
 	stopLevel        StopLevel
@@ -87,6 +88,7 @@ func (m *runtimeContextManager) SoftLimits() RuntimeResources {
 }
 
 func (m *runtimeContextManager) UsedResources() RuntimeResources {
+	m.syncCPU()
 	return m.usedResources
 }
 
@@ -122,6 +124,7 @@ func (m *runtimeContextManager) SetStopLevel(stopLevel StopLevel) {
 }
 
 func (m *runtimeContextManager) Due() bool {
+	m.syncCPU()
 	return m.stopLevel&SoftStop != 0 || !m.softLimits.Dominates(m.usedResources)
 }
 
@@ -133,6 +136,7 @@ func (m *runtimeContextManager) PushContext(ctx RuntimeContextDef) {
 	if m.trackTime {
 		m.updateTimeUsed()
 	}
+	m.syncCPU()
 	parent := m.cache.getParent()
 	*parent = *m
 	m.hardLimits = m.hardLimits.Remove(m.usedResources).Merge(ctx.HardLimits)
@@ -164,6 +168,7 @@ func (m *runtimeContextManager) PushContext(ctx RuntimeContextDef) {
 	}
 	m.trackCpu = m.hardLimits.Cpu > 0 || m.softLimits.Cpu > 0 || m.trackTime
 	m.trackMem = m.hardLimits.Memory > 0 || m.softLimits.Memory > 0
+	m.grantFuel()
 	m.status = StatusLive
 	m.messageHandler = ctx.MessageHandler
 	m.parent = parent
@@ -189,6 +194,7 @@ func (m *runtimeContextManager) PopContext() RuntimeContext {
 	if m == nil || m.parent == nil {
 		return nil
 	}
+	m.syncCPU()
 	if m.gcPolicy == IsolateGCPolicy {
 		m.weakRefPool.ExtractAllMarkedFinalize()
 		releaseResources(m.weakRefPool.ExtractAllMarkedRelease())
@@ -216,6 +222,7 @@ func (m *runtimeContextManager) popContextFast() {
 	if parent == nil {
 		return
 	}
+	m.syncCPU()
 	pool := m.weakRefPool
 	isolated := m.gcPolicy == IsolateGCPolicy
 	if isolated {
@@ -239,20 +246,59 @@ func (m *runtimeContextManager) popContextFast() {
 	}
 }
 
+// cpuFuelChunk is how many CPU ticks at most are granted at a time: the interval at which a hard stop (SetStopLevel) and the clock are looked at.
+const cpuFuelChunk = 2048
+
+// RequireCPU charges cpuAmount ticks to the context.  An instruction of the VM calls it, so it is made to cost a subtraction and a compare: the
+// context is granted ticks in advance (grantFuel), up to the next point where it has to look at its limits, and RequireCPU only uses them up.
+// Where the grant runs out (refuel) the ticks used are added to usedResources, the limits are checked and a new grant is made, so a limit
+// stops the context at the same tick as if each one were checked, and what the context has used is exact when it is read (syncCPU).
 func (m *runtimeContextManager) RequireCPU(cpuAmount uint64) {
 	if m.trackCpu {
-		// The path with limit is "outlined" so RequireCPU can be inlined,
-		// minimising the overhead when there is no limit.
-		m.requireCPU(cpuAmount)
+		m.fuel -= int64(cpuAmount) // amounts are sizes of things the VM works on, far below 2^62
+		if m.fuel <= 0 {
+			m.refuel()
+		}
 	}
 }
 
+// syncCPU adds the ticks used from the grant to usedResources.
+func (m *runtimeContextManager) syncCPU() {
+	m.usedResources.Cpu += uint64(m.granted - m.fuel)
+	m.granted = m.fuel
+}
+
+// grantFuel grants the ticks to be used before the next time the limits are looked at: not more than what is left of the hard limit (so that the
+// tick that reaches it is the one that finds out), of the time to the next look at the clock, and cpuFuelChunk.
+func (m *runtimeContextManager) grantFuel() {
+	if !m.trackCpu {
+		m.fuel, m.granted = 0, 0
+		return
+	}
+	grant := int64(cpuFuelChunk)
+	used := m.usedResources.Cpu
+	if limit := m.hardLimits.Cpu; limit > 0 && limit > used && int64(limit-used) < grant {
+		grant = int64(limit - used)
+	}
+	if m.trackTime && m.nextCpuThreshold > used && int64(m.nextCpuThreshold-used) < grant {
+		grant = int64(m.nextCpuThreshold - used)
+	}
+	if grant < 1 {
+		grant = 1
+	}
+	m.fuel, m.granted = grant, grant
+}
+
+// refuel is where RequireCPU finds the grant used up: it does what a charge of each tick would have done at its end.
+//
 //go:noinline
-func (m *runtimeContextManager) requireCPU(cpuAmount uint64) {
+func (m *runtimeContextManager) refuel() {
 	if m.stopLevel&HardStop != 0 {
 		m.KillContext()
 	}
-	cpuUsed := m.usedResources.Cpu + cpuAmount
+	cpuUsed := m.usedResources.Cpu + uint64(m.granted-m.fuel)
+	m.usedResources.Cpu = cpuUsed
+	m.fuel, m.granted = 0, 0
 	if atLimit(cpuUsed, m.hardLimits.Cpu) {
 		m.TerminateContext("CPU limit of %d exceeded", m.hardLimits.Cpu)
 	}
@@ -260,10 +306,11 @@ func (m *runtimeContextManager) requireCPU(cpuAmount uint64) {
 		m.nextCpuThreshold = cpuUsed + cpuThresholdIncrement
 		m.updateTimeUsed()
 	}
-	m.usedResources.Cpu = cpuUsed
+	m.grantFuel()
 }
 
 func (m *runtimeContextManager) UnusedCPU() uint64 {
+	m.syncCPU()
 	return m.hardLimits.Cpu - m.usedResources.Cpu
 }
 
