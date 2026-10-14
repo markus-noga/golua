@@ -306,6 +306,10 @@ type hashTable struct {
 	slots    []hashTableSlot
 	nextFree uintptr
 	base     uint8
+
+	// mc caches the values of the metamethod events of this table, when it is used as a metatable (see metaGetS).  Any write to the
+	// hash part clears it.
+	mc *metaCache
 }
 
 type hashTableSlot struct {
@@ -349,6 +353,9 @@ func (it *hashTableSlot) nextFlags() uintptr {
 }
 
 func (t *hashTable) set(k, v Value) {
+	if t.mc != nil {
+		t.mc.valid = 0
+	}
 	if setKeyValue(t.slots, (1<<t.base)-1, k, v, t.nextFree) {
 		t.nextFree = updateNextFree(t.slots, t.nextFree)
 	}
@@ -357,6 +364,9 @@ func (t *hashTable) set(k, v Value) {
 func (t *hashTable) reset(k, v Value) bool {
 	if t == nil {
 		return false
+	}
+	if t.mc != nil {
+		t.mc.valid = 0
 	}
 	return resetKeyValue(t.slots, (1<<t.base)-1, k, v)
 }
@@ -375,6 +385,9 @@ func (t *hashTable) find(k Value) Value {
 func (t *hashTable) removeKey(k Value) (wasSet bool) {
 	if t == nil {
 		return false
+	}
+	if t.mc != nil {
+		t.mc.valid = 0
 	}
 	return removeKey(t.slots, (1<<t.base)-1, k)
 }
