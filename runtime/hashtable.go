@@ -3,6 +3,7 @@ package runtime
 import (
 	"math"
 	"math/bits"
+	"sync/atomic"
 	"unsafe"
 )
 
@@ -306,6 +307,10 @@ type hashTable struct {
 	slots    []hashTableSlot
 	nextFree uintptr
 	base     uint8
+
+	// mc caches the values of the metamethod events of this table, when it is used as a metatable (see metaGetS).  Any write to the
+	// hash part clears it.
+	mc *metaCache
 }
 
 type hashTableSlot struct {
@@ -349,6 +354,9 @@ func (it *hashTableSlot) nextFlags() uintptr {
 }
 
 func (t *hashTable) set(k, v Value) {
+	if t.mc != nil {
+		t.mc.valid = 0
+	}
 	if setKeyValue(t.slots, (1<<t.base)-1, k, v, t.nextFree) {
 		t.nextFree = updateNextFree(t.slots, t.nextFree)
 	}
@@ -358,7 +366,30 @@ func (t *hashTable) reset(k, v Value) bool {
 	if t == nil {
 		return false
 	}
+	if t.mc != nil {
+		t.mc.valid = 0
+	}
 	return resetKeyValue(t.slots, (1<<t.base)-1, k, v)
+}
+
+// findHint is find with a hint: the index of the slot where the same lookup found its key last time, which the caller keeps for the place in
+// its code that looks up this key (the same field of tables of the same shape sits in the same slot).  The hint is verified before it is used, so
+// a wrong one only costs the lookup it was meant to save.  Only for keys that are not integers (these may live in the array part).
+func (t *hashTable) findHint(k Value, hint *atomic.Uint32) Value {
+	if t == nil {
+		return NilValue
+	}
+	if i := int(hint.Load()); i < len(t.slots) {
+		if it := &t.slots[i]; it.key.Equals(k) {
+			return it.value
+		}
+	}
+	it, i := findSlot(t.slots, (1<<t.base)-1, k)
+	if it == nil {
+		return NilValue
+	}
+	hint.Store(uint32(i))
+	return it.value
 }
 
 func (t *hashTable) find(k Value) Value {
@@ -375,6 +406,9 @@ func (t *hashTable) find(k Value) Value {
 func (t *hashTable) removeKey(k Value) (wasSet bool) {
 	if t == nil {
 		return false
+	}
+	if t.mc != nil {
+		t.mc.valid = 0
 	}
 	return removeKey(t.slots, (1<<t.base)-1, k)
 }

@@ -112,6 +112,7 @@ func (c *LuaCont) RunInThread(t *Thread) (Cont, error) {
 	var lastLine int32
 	c.running = true
 	opcodes := c.code
+	hints := c.slotHints()
 	regs := c.registers
 	cells := c.cells
 RunLoop:
@@ -234,7 +235,7 @@ RunLoop:
 			coll := getReg(regs, cells, opcode.GetB())
 			idx := getReg(regs, cells, opcode.GetC())
 			if !opcode.GetF() {
-				val, err := Index(t, coll, idx)
+				val, err := indexHint(t, coll, idx, &hints[pc])
 				if err != nil {
 					c.pc = pc
 					return nil, err

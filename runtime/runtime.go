@@ -333,7 +333,133 @@ func (r *Runtime) SetTableCheck(t *Table, k, v Value) error {
 	return nil
 }
 
+// metaEvent identifies a metamethod name that metaGetS caches.
+type metaEvent uint8
+
+const (
+	evIndex metaEvent = iota
+	evNewIndex
+	evEq
+	evLt
+	evLe
+	evAdd
+	evSub
+	evMul
+	evDiv
+	evMod
+	evPow
+	evUnm
+	evIDiv
+	evBAnd
+	evBOr
+	evBXor
+	evShl
+	evShr
+	evBNot
+	evConcat
+	evLen
+	evCall
+	evClose
+	evToString
+	numMetaEvents
+	noMetaEvent = numMetaEvents
+)
+
+// metaEventNames are the names of the events, by metaEvent.
+var metaEventNames = [numMetaEvents]string{"__index", "__newindex", "__eq", "__lt", "__le", "__add", "__sub", "__mul", "__div", "__mod", "__pow",
+	"__unm", "__idiv", "__band", "__bor", "__bxor", "__shl", "__shr", "__bnot", "__concat", "__len", "__call", "__close", "__tostring"}
+
+var metaEventKeys = func() (keys [numMetaEvents]Value) {
+	for i, n := range metaEventNames {
+		keys[i] = StringValue(n)
+	}
+	return
+}()
+
+func metaEventOf(k string) metaEvent {
+	switch k {
+	case "__index":
+		return evIndex
+	case "__newindex":
+		return evNewIndex
+	case "__eq":
+		return evEq
+	case "__lt":
+		return evLt
+	case "__le":
+		return evLe
+	case "__add":
+		return evAdd
+	case "__sub":
+		return evSub
+	case "__mul":
+		return evMul
+	case "__div":
+		return evDiv
+	case "__mod":
+		return evMod
+	case "__pow":
+		return evPow
+	case "__unm":
+		return evUnm
+	case "__idiv":
+		return evIDiv
+	case "__band":
+		return evBAnd
+	case "__bor":
+		return evBOr
+	case "__bxor":
+		return evBXor
+	case "__shl":
+		return evShl
+	case "__shr":
+		return evShr
+	case "__bnot":
+		return evBNot
+	case "__concat":
+		return evConcat
+	case "__len":
+		return evLen
+	case "__call":
+		return evCall
+	case "__close":
+		return evClose
+	case "__tostring":
+		return evToString
+	}
+	return noMetaEvent
+}
+
+// metaCache holds the values that a metatable has for the events, for those that are valid.  It belongs to the hash part of the metatable, which
+// clears valid when it is written to.
+type metaCache struct {
+	valid uint32
+	vals  [numMetaEvents]Value
+}
+
+// metaGetS returns the metamethod k of v, nil if it has none.  The metamethods the VM uses are cached in their metatable: looking one up by its
+// name means hashing the name and walking the slots of the metatable, and an operation on a value with a metatable (every read of a read-only
+// view, every arithmetic operation on a userdata) does it every time.
 func (r *Runtime) metaGetS(v Value, k string) Value {
 	meta := r.RawMetatable(v)
-	return RawGet(meta, StringValue(k))
+	if meta == nil {
+		return NilValue
+	}
+	ev := metaEventOf(k)
+	ht := meta.mixedTable.hashTable
+	if ev == noMetaEvent || ht == nil {
+		return RawGet(meta, StringValue(k))
+	}
+	mc := ht.mc
+	if mc == nil {
+		mc = new(metaCache)
+		ht.mc = mc
+	}
+	if mc.valid&(1<<ev) != 0 {
+		return mc.vals[ev]
+	}
+	val := ht.find(metaEventKeys[ev])
+	mc.vals[ev] = val
+	mc.valid |= 1 << ev
+	return val
 }

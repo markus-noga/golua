@@ -1,6 +1,7 @@
 package runtime
 
 import (
+	"sync/atomic"
 	"unsafe"
 
 	"github.com/arnodel/golua/runtime/internal/luagc"
@@ -66,6 +67,14 @@ func (t *Table) Clone() luagc.Value {
 
 // Get returns t[k].
 func (t *Table) Get(k Value) Value {
+	return t.get(k)
+}
+
+// getHint is Get for a key at a place in the code that keeps a hint for it (see hashTable.findHint).
+func (t *Table) getHint(k Value, hint *atomic.Uint32) Value {
+	if _, ok := k.iface.(string); ok { // not an integer, so only in the hash part
+		return t.mixedTable.hashTable.findHint(k, hint)
+	}
 	return t.get(k)
 }
 

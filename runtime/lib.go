@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"sync/atomic"
 
 	"github.com/arnodel/golua/ast"
 	"github.com/arnodel/golua/astcomp"
@@ -36,6 +37,36 @@ func Index(t *Thread, coll Value, k Value) (Value, error) {
 		tbl, ok := coll.TryTable()
 		if ok {
 			if val := RawGet(tbl, k); !val.IsNil() {
+				return val, nil
+			}
+		}
+		metaIdx := t.metaGetS(coll, "__index")
+		if metaIdx.IsNil() {
+			if ok {
+				return NilValue, nil
+			}
+			return NilValue, indexError(coll)
+		}
+		if _, ok := metaIdx.TryTable(); ok {
+			coll = metaIdx
+		} else {
+			res := t.pooledTermination(1)
+			if err := Call(t, metaIdx, []Value{coll, k}, res); err != nil {
+				return NilValue, err
+			}
+			return res.Get(0), nil
+		}
+	}
+	return NilValue, fmt.Errorf("'__index' chain too long; possible loop")
+}
+
+// indexHint is Index for a place in the code that keeps a hint for the slot of the key (see hashTable.findHint).
+func indexHint(t *Thread, coll Value, k Value, hint *atomic.Uint32) (Value, error) {
+	for i := 0; i < maxIndexChainLength; i++ {
+		t.RequireCPU(1)
+		tbl, ok := coll.TryTable()
+		if ok {
+			if val := tbl.getHint(k, hint); !val.IsNil() {
 				return val, nil
 			}
 		}

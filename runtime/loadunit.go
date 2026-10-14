@@ -1,6 +1,7 @@
 package runtime
 
 import (
+	"sync/atomic"
 	"unsafe"
 
 	"github.com/arnodel/golua/code"
@@ -17,6 +18,21 @@ type Code struct {
 	UpNames      []string
 	RegCount     int16
 	CellCount    int16
+
+	// hints is, for each instruction, the slot hint of the table read it makes (see hashTable.findHint), made when the code first runs.
+	hints atomic.Pointer[[]atomic.Uint32]
+}
+
+// slotHints returns the slot hints of the code, one for each instruction.
+func (c *Code) slotHints() []atomic.Uint32 {
+	if p := c.hints.Load(); p != nil {
+		return *p
+	}
+	h := make([]atomic.Uint32, len(c.code))
+	if c.hints.CompareAndSwap(nil, &h) {
+		return h
+	}
+	return *c.hints.Load()
 }
 
 // RefactorConsts returns an equivalent *Code this consts "refactored", which
@@ -54,10 +70,18 @@ func (r *Runtime) RefactorCodeConsts(c *Code) *Code {
 		}
 		opcodes[i] = op
 	}
-	cc := *c
-	cc.code = opcodes
-	cc.consts = consts
-	return &cc
+	// not a copy of *c: the new code has hints of its own, for its own instructions
+	return &Code{
+		source:       c.source,
+		name:         c.name,
+		code:         opcodes,
+		lines:        c.lines,
+		consts:       consts,
+		UpvalueCount: c.UpvalueCount,
+		UpNames:      c.UpNames,
+		RegCount:     c.RegCount,
+		CellCount:    c.CellCount,
+	}
 }
 
 // LoadLuaUnit turns a code unit into a closure given an environment env.
