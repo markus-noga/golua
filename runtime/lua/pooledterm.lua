@@ -36,3 +36,18 @@ dmt.__add = function(a, b)
 end
 print(setmetatable({n = depth}, dmt) + 0)
 --> =60
+
+-- an error raised by a Go function that is called as a metamethod, after other metamethod calls at the same depth: the continuations are
+-- walked up from the Go function to find where the error happened, which must not go round in a circle
+do
+    local t = setmetatable({}, {__index = function() return 1 end})
+    local a, b = t.x, t.y
+    local u = setmetatable({}, {__index = error})
+    local ok, err = pcall(function() local c = t.z; return u.w end)
+    print(ok, a, b, type(err))
+    --> =false	1	1	string
+    local v = setmetatable({}, {__add = function(x, y) return x end, __mul = error})
+    local ok2, e2 = pcall(function() local s = v + 1; local r = v + 2; return v * 3 end)
+    print(ok2, e2 == v)
+    --> =false	true
+end

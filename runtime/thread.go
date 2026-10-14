@@ -38,7 +38,19 @@ func (t *Thread) pooledTermination(nArgs int) *Termination {
 		c = new(Termination)
 		t.terms[d] = c
 	}
-	c.parent = t.CurrentCont()
+	// The parent is the continuation that makes the call: after an earlier call at this depth the current continuation is a termination, often
+	// this very one, which is the last that ran. A termination that is its own parent would make Parent recurse for ever, when an error walks up
+	// the continuations from a Go function it was called through. The termination of an earlier call stands for the continuation that was current
+	// then, so that is what it is replaced by, until there is no termination left.
+	parent := t.CurrentCont()
+	for {
+		tm, ok := parent.(*Termination)
+		if !ok {
+			break
+		}
+		parent = tm.parent
+	}
+	c.parent = parent
 	c.pushIndex = 0
 	c.etc = nil
 	c.inline = [2]Value{}
