@@ -56,3 +56,21 @@ func TestSetHint(t *testing.T) {
 		t.Fatal("integer key")
 	}
 }
+
+// Equals on long strings: the same string, an equal one in other memory, one that differs in the last byte, and one of another length.
+func TestEqualsLongStrings(t *testing.T) {
+	a := "consumption2_rated_scaled"
+	b := string(append([]byte(nil), a...)) // equal, other memory
+	c := a[:len(a)-1] + "x"
+	d := a + "_"
+	va, vb, vc, vd := StringValue(a), StringValue(b), StringValue(c), StringValue(d)
+	if !va.Equals(va) || !va.Equals(vb) || !vb.Equals(va) {
+		t.Error("equal strings are not equal")
+	}
+	if va.Equals(vc) || va.Equals(vd) || vd.Equals(va) {
+		t.Error("different strings are equal")
+	}
+	if va.Equals(StringValue("short")) || va.Equals(IntValue(1)) {
+		t.Error("a long string equals something else")
+	}
+}

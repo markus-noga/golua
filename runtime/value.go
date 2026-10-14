@@ -108,6 +108,10 @@ func (v Value) Equals(v2 Value) bool {
 		if v.scalar != 0 {
 			return true
 		}
+		// A long string.  The same string (the key of a field, as it is in the code and in the table) is the same pointer and length, and
+		// the comparison of the interfaces that follows for the rest costs three calls (efaceeq, strequal, memequal) to find that out.
+		y := v2.iface.(string)
+		return len(x) == len(y) && (unsafe.StringData(x) == unsafe.StringData(y) || x == y)
 	case *Closure:
 		return x.Equals(v2.iface.(*Closure))
 	}
