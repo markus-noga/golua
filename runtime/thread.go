@@ -348,6 +348,34 @@ func (t *Thread) CallContext(def RuntimeContextDef, f func() error) (ctx Runtime
 	return
 }
 
+// CallContextFast is CallContext for callers that do not look at the finished
+// context: it returns only the error and recycles the bookkeeping of the
+// context instead of leaving it to the garbage collector.  The limits apply
+// exactly as in CallContext.
+func (t *Thread) CallContextFast(def RuntimeContextDef, f func() error) (err error) {
+	t.PushContext(def)
+	c, h := t.CurrentCont(), t.closeStack.size()
+	defer func() {
+		t.popContextFast()
+		if r := recover(); r != nil {
+			t.closeStack.truncate(h)
+			termErr, ok := r.(ContextTerminationError)
+			if !ok {
+				panic(r)
+			}
+			err = termErr
+		}
+	}()
+	err = t.cleanupCloseStack(c, h, f())
+	if t.GCPolicy() == IsolateGCPolicy {
+		t.runFinalizers(t.weakRefPool.ExtractAllMarkedFinalize())
+	}
+	if err != nil {
+		t.setStatus(StatusError)
+	}
+	return
+}
+
 //
 // close stack operations
 //

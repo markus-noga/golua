@@ -46,6 +46,27 @@ type runtimeContextManager struct {
 	gcPolicy    GCPolicy
 
 	fsAccess *safeio.FSAccess
+
+	cache *ctxCache // shared by every copy of the manager, see PushContext
+}
+
+// ctxCache holds what PushContext and PopContext would otherwise allocate on
+// every call: the heap copies of the parent context and the weak pools of
+// contexts with limits.  Only the Fast variants (CallContextFast) recycle them,
+// because the RuntimeContext returned by PopContext keeps pointing at its
+// parent.
+type ctxCache struct {
+	parents []*runtimeContextManager
+	pools   []luagc.Pool
+}
+
+func (c *ctxCache) getParent() *runtimeContextManager {
+	if n := len(c.parents); n > 0 {
+		p := c.parents[n-1]
+		c.parents = c.parents[:n-1]
+		return p
+	}
+	return new(runtimeContextManager)
 }
 
 var _ RuntimeContext = (*runtimeContextManager)(nil)
@@ -54,6 +75,7 @@ func (m *runtimeContextManager) initRoot() {
 	m.gcPolicy = IsolateGCPolicy
 	m.weakRefPool = m.poolFactory()
 	m.fsAccess = safeio.Unrestricted
+	m.cache = new(ctxCache)
 }
 
 func (m *runtimeContextManager) HardLimits() RuntimeResources {
@@ -111,7 +133,8 @@ func (m *runtimeContextManager) PushContext(ctx RuntimeContextDef) {
 	if m.trackTime {
 		m.updateTimeUsed()
 	}
-	parent := *m
+	parent := m.cache.getParent()
+	*parent = *m
 	m.startTime = now()
 	m.hardLimits = m.hardLimits.Remove(m.usedResources).Merge(ctx.HardLimits)
 	m.softLimits = m.hardLimits.Merge(m.softLimits).Merge(ctx.SoftLimits)
@@ -141,9 +164,14 @@ func (m *runtimeContextManager) PushContext(ctx RuntimeContextDef) {
 	m.trackMem = m.hardLimits.Memory > 0 || m.softLimits.Memory > 0
 	m.status = StatusLive
 	m.messageHandler = ctx.MessageHandler
-	m.parent = &parent
+	m.parent = parent
 	if ctx.GCPolicy == IsolateGCPolicy || ctx.HardLimits.Millis > 0 || ctx.HardLimits.Cpu > 0 || ctx.HardLimits.Memory > 0 {
-		m.weakRefPool = m.poolFactory()
+		if n := len(m.cache.pools); n > 0 {
+			m.weakRefPool = m.cache.pools[n-1]
+			m.cache.pools = m.cache.pools[:n-1]
+		} else {
+			m.weakRefPool = m.poolFactory()
+		}
 		m.gcPolicy = IsolateGCPolicy
 	} else {
 		m.weakRefPool = parent.weakRefPool
@@ -177,6 +205,36 @@ func (m *runtimeContextManager) PopContext() RuntimeContext {
 		m.updateTimeUsed()
 	}
 	return &mCopy
+}
+
+// popContextFast is PopContext without the copy of the context for the
+// caller; the parent copy and the weak pool go back to the cache.
+func (m *runtimeContextManager) popContextFast() {
+	parent := m.parent
+	if parent == nil {
+		return
+	}
+	pool := m.weakRefPool
+	isolated := m.gcPolicy == IsolateGCPolicy
+	if isolated {
+		pool.ExtractAllMarkedFinalize()
+		releaseResources(pool.ExtractAllMarkedRelease())
+	}
+	if m.fsAccess != parent.fsAccess {
+		_ = m.fsAccess.Close()
+	}
+	used := m.usedResources
+	parent.RequireCPU(used.Cpu)
+	parent.RequireMem(used.Memory)
+	*m = *parent
+	if isolated {
+		m.cache.pools = append(m.cache.pools, pool)
+	}
+	*parent = runtimeContextManager{}
+	m.cache.parents = append(m.cache.parents, parent)
+	if m.trackTime {
+		m.updateTimeUsed()
+	}
 }
 
 func (m *runtimeContextManager) RequireCPU(cpuAmount uint64) {

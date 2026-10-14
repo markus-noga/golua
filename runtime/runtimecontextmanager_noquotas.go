@@ -88,6 +88,10 @@ func (m *runtimeContextManager) PopContext() RuntimeContext {
 	return &mCopy
 }
 
+func (m *runtimeContextManager) popContextFast() {
+	m.PopContext()
+}
+
 func (m *runtimeContextManager) CallContext(def RuntimeContextDef, f func() error) (ctx RuntimeContext, err error) {
 	m.PushContext(def)
 	defer m.PopContext()
