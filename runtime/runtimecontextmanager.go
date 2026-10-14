@@ -135,7 +135,6 @@ func (m *runtimeContextManager) PushContext(ctx RuntimeContextDef) {
 	}
 	parent := m.cache.getParent()
 	*parent = *m
-	m.startTime = now()
 	m.hardLimits = m.hardLimits.Remove(m.usedResources).Merge(ctx.HardLimits)
 	m.softLimits = m.hardLimits.Merge(m.softLimits).Merge(ctx.SoftLimits)
 	m.usedResources = RuntimeResources{}
@@ -160,6 +159,9 @@ func (m *runtimeContextManager) PushContext(ctx RuntimeContextDef) {
 		m.fsAccess = safeio.NoAccess
 	}
 	m.trackTime = m.hardLimits.Millis > 0 || m.softLimits.Millis > 0
+	if m.trackTime { // only a context with a time limit reads the time it started at: a call of the clock for each call of a rule is 2% of a run
+		m.startTime = now()
+	}
 	m.trackCpu = m.hardLimits.Cpu > 0 || m.softLimits.Cpu > 0 || m.trackTime
 	m.trackMem = m.hardLimits.Memory > 0 || m.softLimits.Memory > 0
 	m.status = StatusLive
