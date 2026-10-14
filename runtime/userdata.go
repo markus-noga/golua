@@ -38,6 +38,12 @@ func NewUserData(v interface{}, meta *Table) *UserData {
 	return &UserData{value: v, meta: meta}
 }
 
+// Init sets the value and metatable of a UserData that the caller allocated
+// itself, e.g. embedded in a struct with the value, to save an allocation.
+func (d *UserData) Init(v interface{}, meta *Table) {
+	d.value, d.meta = v, meta
+}
+
 // Value returns the userdata's value.
 func (d *UserData) Value() interface{} {
 	return d.value
