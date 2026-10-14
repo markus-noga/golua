@@ -94,6 +94,37 @@ func (t *Table) Set(k, v Value) uint64 {
 // TableHeaderSize is the memory a new empty table takes.
 const TableHeaderSize = uint64(unsafe.Sizeof(Table{}) + unsafe.Sizeof(mixedTable{}))
 
+// SetHint is Set for a string key at a place that keeps a hint for it: the index of the slot where the key was found last time (see
+// hashTable.findHint), which is checked before it is used, so a wrong hint only costs the lookup.  A table that is written again and
+// again with the same keys, such as the context a host builds for every call of a rule, spends most of Set on finding the key; with the
+// hint it is a compare and a store.  The hint belongs to the caller and must not be shared between goroutines.
+func (t *Table) SetHint(k, v Value, hint *uint32) uint64 {
+	if v.IsNil() {
+		return t.Set(k, v)
+	}
+	if _, ok := k.iface.(string); !ok {
+		return t.Set(k, v)
+	}
+	if ht := t.mixedTable.hashTable; ht != nil {
+		if i := int(*hint); i < len(ht.slots) {
+			if it := &ht.slots[i]; it.key.Equals(k) {
+				if ht.mc != nil {
+					ht.mc.valid = 0
+				}
+				it.value = v
+				return 0
+			}
+		}
+	}
+	n := t.Set(k, v)
+	if ht := t.mixedTable.hashTable; ht != nil {
+		if it, i := findSlot(ht.slots, (1<<ht.base)-1, k); it != nil {
+			*hint = uint32(i)
+		}
+	}
+	return n
+}
+
 // Reset implements t[k] = v only if t[k] was already non-nil.
 func (t *Table) Reset(k, v Value) (wasSet bool) {
 	if v.IsNil() {
